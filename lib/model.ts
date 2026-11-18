@@ -359,9 +359,14 @@ function secondActionFor(p: SnapshotProtocol, capital: number, chain: string): s
 }
 
 /**
- * A protocol's farm plan: seven steps, each an action with a cost and a time. The plan is derived
- * from the protocol's own record (category, chains, TVL, age), never from a hand-written list of
- * names. The dashboard's page generates the same seven steps from the same derivation.
+ * A protocol's farm plan: seven steps, eight when it runs on more than one chain, each an
+ * action with a cost and a time. The plan is derived from the protocol's own record (category,
+ * chains, TVL, age), never from a hand-written list of names. The dashboard's page generates
+ * the same steps from the same derivation. The costs are chain-aware: the gas a transaction
+ * needs on Ethereum mainnet is an order of magnitude above an L2 or Solana, so a plan that
+ * quotes one flat gas figure would mislead a farmer on the expensive chain and overstate the
+ * cost on the cheap one. The hold step's time is the whole plan's effort, not just its length:
+ * the setup and the weekly actions, plus extra check-ins while the protocol is young.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
@@ -369,31 +374,41 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const hold = holdDaysFor(age);
   const action = actionFor(p, capital, chain);
   const second = secondActionFor(p, capital, chain);
-  return [
+  const steps: FarmStep[] = [
     {
       text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.`,
-      cost: 'under $3 of gas for the first transaction',
+      cost: `first transaction costs ${gasPerTx(chain)} in gas`,
       time: '5 minutes',
     },
     {
       text: action,
-      cost: `$${capital} of capital and about $${capital >= 150 ? 8 : 4} of gas`,
+      cost: `$${capital} of capital; ${gasHint(chain)}`,
       time: '15 minutes to set up',
     },
+  ];
+  const bridge = bridgeHint(p.chains);
+  if (bridge !== null) {
+    steps.push({
+      text: `Bridge your USDC to ${chain} once: the protocol ${bridge}`,
+      cost: `one bridge, ${gasPerTx(chain)} in gas`,
+      time: '15 minutes',
+    });
+  }
+  steps.push(
     {
       text: second,
-      cost: `about $${capital >= 150 ? 4 : 2} of gas`,
+      cost: `one more transaction: ${gasHint(chain)}`,
       time: '10 minutes',
     },
     {
       text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.`,
-      cost: 'about $2 of gas a week',
+      cost: `each weekly action costs ${gasPerTx(chain)} in gas`,
       time: '10 minutes a week',
     },
     {
       text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
       cost: `the $${capital} stays in the position`,
-      time: `${hold} days`,
+      time: timeEstimate(hold, age),
     },
     {
       text: `Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.`,
@@ -405,7 +420,69 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       cost: 'nothing but the log',
       time: '5 minutes',
     },
-  ];
+  );
+  return steps;
+}
+
+/** What one transaction costs on a chain, by family: mainnet is an order of magnitude above the
+    L2s, Solana and BNB Chain sit at the cheap end, and anything unlisted is priced as a cheap
+    chain rather than guessed at. The figures are the going range for a plain transfer or
+    approval, not a quote, and the note says so by naming the family, not a number from a feed. */
+export interface GasProfile {
+  label: string;
+  figure: string;
+}
+
+const L2_CHAIN =
+  /(arbitrum|optimism|base|zksync|linea|scroll|blast|unichain|mode|ink|fraxtal|starknet|taiko|zora|soneium|abstract|mantle|metis|boba|\bbob\b|kroma|manta|morph|swell|katana|hemi|plume|zkfair|zklink|apex|op_bnb|opbnb|megaeth|rise|fluent|fogo|odyssey|tempo|codex|etherlink|ronin|immutable)/;
+
+export function gasProfile(chain: string): GasProfile {
+  const c = chain.toLowerCase();
+  if (chain === 'Ethereum') return { label: 'Ethereum mainnet', figure: '$5 to $20' };
+  if (c.includes('solana')) return { label: 'Solana', figure: 'under $0.01' };
+  if (c.includes('bitcoin')) return { label: 'Bitcoin', figure: 'a few dollars' };
+  if (L2_CHAIN.test(c)) return { label: 'this L2', figure: 'under $0.50' };
+  if (c.includes('binance') || c.includes('bnb')) return { label: 'BNB Chain', figure: 'under $0.50' };
+  if (c.includes('polygon')) return { label: 'Polygon', figure: 'a few cents' };
+  if (c.includes('avalanche')) return { label: 'Avalanche', figure: 'under $1' };
+  if (c.includes('tron')) return { label: 'Tron', figure: 'under $1' };
+  return { label: 'this chain', figure: 'under $1' };
+}
+
+/** One transaction's gas on a chain, as a sentence a farm plan can quote. */
+export function gasHint(chain: string): string {
+  const g = gasProfile(chain);
+  return `gas on ${g.label} is ${g.figure} a transaction`;
+}
+
+/** One transaction's gas on a chain, as a bare figure for a cost field. */
+export function gasPerTx(chain: string): string {
+  return gasProfile(chain).figure;
+}
+
+/** A one-line bridge note for a protocol that runs on more than one chain, or null when it runs
+    on one: the other chains it runs on, capped at two names, and the point of bridging once and
+    farming where gas is cheapest. A single-chain protocol needs no bridge step at all. */
+export function bridgeHint(chains: string[]): string | null {
+  if (chains.length < 2) return null;
+  const others = chains.slice(1);
+  const shown = others.slice(0, 2).join(', ');
+  const rest = others.length - 2;
+  const more = rest > 0 ? ` and ${rest} more` : '';
+  return `also runs on ${shown}${more}, so farm where gas is cheapest`;
+}
+
+/** The whole plan's effort, from its hold window and the protocol's age: the setup, the weekly
+    actions, and the claim check, at ten minutes an action, plus four extra weekly check-ins
+    while the protocol is under 180 days old, when it changes fastest. The hold window itself
+    is the span the effort spreads over, so the estimate reads as hours over days, not a
+    single sitting. */
+export function timeEstimate(holdDays: number, ageDays: number | null): string {
+  const weeks = Math.max(1, Math.ceil(holdDays / 7));
+  const extraWeeks = ageDays !== null && ageDays < 180 ? Math.min(weeks, 4) : 0;
+  const minutes = 45 + 10 * (weeks + extraWeeks);
+  const hours = Math.round(minutes / 30) / 2;
+  return `about ${hours} hour${hours === 1 ? '' : 's'} of activity spread over ${holdDays} days`;
 }
 
 /** The live-token protocols, by market cap, for the dashboard's Live token view. */

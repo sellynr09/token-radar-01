@@ -26,6 +26,23 @@ function fmtAge(days) {
   return Math.max(0, Math.round(days)) + 'd';
 }
 
+/** Why a row ranks where it does, from the same figures the model scores: TVL against the
+    board median, the base the 0.30 multiple gives, the growth multiplier the week's change
+    sets, and the maturity multiplier the age with no token sets. One sentence, all numbers
+    the row already carries, so the drawer explains the rank instead of only stating it. */
+function whyRank(row, model, medianTvl) {
+  var base = row.tvl_usd * model.base_multiple;
+  var median = medianTvl || 1;
+  var ratio = (row.tvl_usd / median).toFixed(1);
+  var growth = (row.change_7d === null || row.change_7d === undefined)
+    ? 'with no 7-day change on record, the growth multiplier stays 1.00'
+    : 'its ' + fmtPct(row.change_7d) + ' week puts the growth multiplier at ' + row.growth_multiplier;
+  var age = (row.age_days === null || row.age_days === undefined)
+    ? 'an unknown age counts as ' + model.unknown_age_days + ' days'
+    : fmtAge(row.age_days) + ' with no token';
+  return 'Rank ' + row.rank + ' because it holds ' + fmtUsd(row.tvl_usd) + ' of TVL, ' + ratio + 'x the board median: the ' + model.base_multiple + ' base alone is ' + fmtUsd(base) + ', ' + growth + ', and ' + age + ' puts the maturity multiplier at ' + row.maturity_multiplier + ' — so the model reads ' + fmtUsd(row.implied_value_usd) + '.';
+}
+
 /** The model in one function: TVL x base, growth, maturity — the same as lib/model.ts. */
 function impliedOf(row, model) {
   var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
@@ -91,19 +108,65 @@ function stepText(step) {
   if (s.length < 20) s = s + " Hold the position and check the protocol's own page.";
   return s;
 }
+/** One transaction's gas on a chain, by family: mainnet is an order of magnitude above the L2s,
+    Solana and BNB Chain sit at the cheap end, and anything unlisted is priced as a cheap chain
+    rather than guessed at. The same derivation main.ts writes to board.json. */
+var L2_CHAIN = /(arbitrum|optimism|base|zksync|linea|scroll|blast|unichain|mode|ink|fraxtal|starknet|taiko|zora|soneium|abstract|mantle|metis|boba|\bbob\b|kroma|manta|morph|swell|katana|hemi|plume|zkfair|zklink|apex|op_bnb|opbnb|megaeth|rise|fluent|fogo|odyssey|tempo|codex|etherlink|ronin|immutable)/;
+function gasProfile(chain) {
+  var c = (chain || '').toLowerCase();
+  if (chain === 'Ethereum') return { label: 'Ethereum mainnet', figure: '$5 to $20' };
+  if (c.indexOf('solana') >= 0) return { label: 'Solana', figure: 'under $0.01' };
+  if (c.indexOf('bitcoin') >= 0) return { label: 'Bitcoin', figure: 'a few dollars' };
+  if (L2_CHAIN.test(c)) return { label: 'this L2', figure: 'under $0.50' };
+  if (c.indexOf('binance') >= 0 || c.indexOf('bnb') >= 0) return { label: 'BNB Chain', figure: 'under $0.50' };
+  if (c.indexOf('polygon') >= 0) return { label: 'Polygon', figure: 'a few cents' };
+  if (c.indexOf('avalanche') >= 0) return { label: 'Avalanche', figure: 'under $1' };
+  if (c.indexOf('tron') >= 0) return { label: 'Tron', figure: 'under $1' };
+  return { label: 'this chain', figure: 'under $1' };
+}
+function gasHint(chain) {
+  var g = gasProfile(chain);
+  return 'gas on ' + g.label + ' is ' + g.figure + ' a transaction';
+}
+function gasPerTx(chain) { return gasProfile(chain).figure; }
+/** A one-line bridge note for a protocol on more than one chain, or null on a single chain. */
+function bridgeHint(chains) {
+  if (!chains || chains.length < 2) return null;
+  var others = chains.slice(1);
+  var shown = others.slice(0, 2).join(', ');
+  var rest = others.length - 2;
+  var more = rest > 0 ? ' and ' + rest + ' more' : '';
+  return 'also runs on ' + shown + more + ', so farm where gas is cheapest';
+}
+/** The whole plan's effort: setup, weekly actions and claim check at ten minutes an action,
+    plus four extra weekly check-ins while the protocol is under 180 days old. */
+function timeEstimate(holdDays, ageDays) {
+  var weeks = Math.max(1, Math.ceil(holdDays / 7));
+  var extraWeeks = (ageDays !== null && ageDays !== undefined && ageDays < 180) ? Math.min(weeks, 4) : 0;
+  var minutes = 45 + 10 * (weeks + extraWeeks);
+  var hours = Math.round(minutes / 30) / 2;
+  return 'about ' + hours + ' hour' + (hours === 1 ? '' : 's') + ' of activity spread over ' + holdDays + ' days';
+}
 function farmSteps(p) {
   var chain = chainOf(p);
   var capital = capitalFor(p);
   var hold = holdDaysFor(p.age_days);
-  return [
-    { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'under $3 of gas for the first transaction', time: '5 minutes' },
-    { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + (capital >= 150 ? 8 : 4) + ' of gas', time: '15 minutes to set up' },
-    { text: secondActionFor(p, capital, chain), cost: 'about $' + (capital >= 150 ? 4 : 2) + ' of gas', time: '10 minutes' },
-    { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: 'about $2 of gas a week', time: '10 minutes a week' },
-    { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
+  var steps = [
+    { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.', cost: 'first transaction costs ' + gasPerTx(chain) + ' in gas', time: '5 minutes' },
+    { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital; ' + gasHint(chain), time: '15 minutes to set up' }
+  ];
+  var bridge = bridgeHint(p.chains);
+  if (bridge !== null) {
+    steps.push({ text: 'Bridge your USDC to ' + chain + ' once: the protocol ' + bridge, cost: 'one bridge, ' + gasPerTx(chain) + ' in gas', time: '15 minutes' });
+  }
+  steps.push(
+    { text: secondActionFor(p, capital, chain), cost: 'one more transaction: ' + gasHint(chain), time: '10 minutes' },
+    { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: 'each weekly action costs ' + gasPerTx(chain) + ' in gas', time: '10 minutes a week' },
+    { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: timeEstimate(hold, p.age_days) },
     { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
     { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
-  ].map(stepText);
+  );
+  return steps.map(stepText);
 }
 
 (function () {
@@ -398,12 +461,20 @@ function farmSteps(p) {
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(impliedOf(row, DATA.model)) + (impliedOf(row, DATA.model) === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
+      el('h3', { text: 'Why this rank' }),
+      el('p', { class: 'sub', text: whyRank(row, DATA.model, DATA.median_tvl_usd) })
+    ));
+    dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
       el('ol', { class: 'steps' }, steps.map(function (s) {
         var at = s.indexOf(' Cost: ');
         var action = at >= 0 ? s.slice(0, at) : s;
-        var tail = at >= 0 ? s.slice(at + 1) : '';
-        return el('li', null, el('b', { text: action }), el('span', { class: 'cost', text: tail }));
+        var rest = at >= 0 ? s.slice(at + 7) : '';
+        var tat = rest.indexOf(' Time: ');
+        var cost = tat >= 0 ? rest.slice(0, tat) : rest;
+        var time = tat >= 0 ? rest.slice(tat + 7) : '';
+        if (time.charAt(time.length - 1) === '.') time = time.slice(0, -1);
+        return el('li', null, el('b', { text: action }), el('span', { class: 'cost', text: 'Cost: ' + cost }), el('span', { class: 'time', text: 'Time: ' + time }));
       }))
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },

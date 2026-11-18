@@ -145,7 +145,7 @@ tbody tr.kb-selected { background: rgba(240, 180, 41, 0.14); outline: 2px solid 
 .steps li { padding-left: var(--s1); }
 .steps li::marker { color: var(--accent); font-family: var(--font-num); }
 .steps b { display: block; font-weight: 500; }
-.cost { color: var(--muted); font-size: 12px; font-family: var(--font-num); }
+.cost, .time { display: block; color: var(--muted); font-size: 12px; font-family: var(--font-num); }
 
 @media (max-width: 1000px) {
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
