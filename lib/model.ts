@@ -539,6 +539,52 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
   return null;
 }
 
+/** A short human-readable summary of a finished board: how many rows it ranks, how much of the
+    watchlist it covers, who heads it, and what the whole board is worth in implied value. The
+    board alone knows the watchlist rows it carries; the caller passes the watchlist's size so the
+    coverage reads as a fraction of the list it was asked to cover. */
+export function summarizeBoard(board: BoardRow[], watchlistSize?: number): string {
+  const covered = board.filter((r) => r.watchlist).length;
+  const total = watchlistSize ?? covered;
+  const top = board[0];
+  const totalImplied = board.reduce((n, r) => n + r.implied_value_usd, 0);
+  const lines = [
+    `token radar stats: ${board.length} rows, watchlist ${covered}/${total} covered`,
+    top === undefined
+      ? 'token radar stats: the board is empty, so no protocol heads it'
+      : `token radar stats: rank 1 ${top.name} — $${top.implied_value_usd.toLocaleString('en-US')} implied`,
+    `token radar stats: total implied value $${totalImplied.toLocaleString('en-US')}`,
+  ];
+  return lines.join('\n');
+}
+
+/** A snapshot's shape, checked row by row, before the model scores it: every protocol needs a
+    non-empty slug, a name, and a finite TVL, the three fields no row can be ranked without. A bad
+    row fails with its position and the missing field named, instead of failing later inside the
+    scoring where the cause is harder to see. */
+export function validateSnapshot(value: unknown): asserts value is Snapshot {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new SnapshotError('snapshot is not a JSON object');
+  }
+  const o = value as Record<string, unknown>;
+  if (!Array.isArray(o.protocols)) throw new SnapshotError('snapshot has no protocols array');
+  o.protocols.forEach((entry, i) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      throw new SnapshotError(`snapshot protocol ${i} is not an object`);
+    }
+    const p = entry as Record<string, unknown>;
+    if (typeof p.slug !== 'string' || p.slug.trim() === '') {
+      throw new SnapshotError(`snapshot protocol ${i} has no slug`);
+    }
+    if (typeof p.name !== 'string' || p.name.trim() === '') {
+      throw new SnapshotError(`snapshot protocol ${p.slug} has no name`);
+    }
+    if (typeof p.tvl_usd !== 'number' || !Number.isFinite(p.tvl_usd)) {
+      throw new SnapshotError(`snapshot protocol ${p.slug} has no TVL`);
+    }
+  });
+}
+
 /** A compact data.js: the dashboard's whole dataset as one script, no fetch and no network. */
 export function dataScript(radar: RadarData): string {
   return `window.RADAR=${JSON.stringify(radar)};\n`;

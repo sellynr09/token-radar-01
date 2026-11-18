@@ -112,7 +112,7 @@ function farmSteps(p) {
   if (!DATA || typeof document === 'undefined') return;
   var app = document.getElementById('board');
   if (!app) return;
-  var state = { q: '', category: 'all', chain: 'all', minTvl: 0, tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
+  var state = { q: '', category: 'all', chain: 'all', minTvl: 0, tab: 'pre-token', sort: 'implied', dir: -1, selected: null, kbIndex: -1 };
 
   function el(tag, attrs) {
     var node = document.createElement(tag);
@@ -270,6 +270,7 @@ function farmSteps(p) {
 
   function boardTable() {
     var list = sortedRows(rows());
+    if (state.kbIndex >= list.length) state.kbIndex = -1;
     if (list.length === 0) {
       return el('div', { class: 'panel' }, el('div', { class: 'empty' },
         el('h2', { text: 'No protocol matches that filter' }),
@@ -279,7 +280,7 @@ function farmSteps(p) {
     }
     var max = DATA.top_implied_usd || 1;
     var tbody = el('tbody');
-    list.forEach(function (r) {
+    list.forEach(function (r, i) {
       var growth = r.change_7d === null ? 'n/a' : fmtPct(r.change_7d);
       var growthClass = r.change_7d === null ? '' : r.change_7d >= 0 ? 'pos' : 'neg';
       var tr = el('tr', {
@@ -302,6 +303,7 @@ function farmSteps(p) {
         )),
         el('td', null, el('span', { class: r.watchlist ? 'badge watch' : 'badge', text: r.watchlist ? 'Watchlist' : 'Early' }))
       );
+      if (state.kbIndex === i) tr.classList.add('kb-selected');
       tbody.appendChild(tr);
     });
     return el('div', { class: 'panel' },
@@ -431,9 +433,52 @@ function farmSteps(p) {
     if (state.selected) openDetail(state.selected);
   }
 
+  // Keyboard navigation for the board. ArrowDown and ArrowUp walk the rows the current filters
+  // leave visible, Enter opens the walked-to row, and "/" puts the cursor in the search box.
+  // The walk is a class on one row at a time, so the first paint never shows it, and the walk
+  // never touches the data: it only reads the same filtered, sorted list the table renders.
+  // Keys are ignored while typing in a field or while the detail drawer is open, so the walk
+  // never steals a keystroke the search box or the drawer needs.
+  function visibleRows() {
+    if (state.tab !== 'pre-token') return [];
+    return sortedRows(rows());
+  }
+  function paintSelection() {
+    var trs = app.querySelectorAll('.table-wrap tbody tr');
+    for (var i = 0; i < trs.length; i++) {
+      trs[i].classList.toggle('kb-selected', i === state.kbIndex);
+    }
+    var current = trs[state.kbIndex];
+    if (current && typeof current.scrollIntoView === 'function') current.scrollIntoView({ block: 'nearest' });
+  }
+  function stepSelection(step) {
+    var list = visibleRows();
+    if (list.length === 0) return;
+    if (state.kbIndex < 0) state.kbIndex = step > 0 ? 0 : list.length - 1;
+    else state.kbIndex = Math.min(list.length - 1, Math.max(0, state.kbIndex + step));
+    paintSelection();
+  }
+  function openSelected() {
+    var list = visibleRows();
+    var row = list[state.kbIndex];
+    if (row) openDetail(row.slug);
+  }
+  function typingIn(e) {
+    var tag = e.target && e.target.tagName;
+    return tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable);
+  }
+
   readHash();
   render();
   window.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && dialog.open) dialog.close();
+    if (typingIn(e) || dialog.open) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); stepSelection(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); stepSelection(-1); }
+    else if (e.key === 'Enter' && state.kbIndex >= 0 && e.target === document.body) { e.preventDefault(); openSelected(); }
+    else if (e.key === '/') {
+      var search = document.getElementById('q');
+      if (search) { e.preventDefault(); search.focus(); search.select(); }
+    }
   });
 })();
