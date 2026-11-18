@@ -183,3 +183,11 @@ tbody tr.kb-selected { background: rgba(240, 180, 41, 0.14); outline: 2px solid 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
+
+.cmp { text-align: center; }
+.cmp input { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; vertical-align: middle; }
+.compare, .catov { margin-bottom: var(--s4); padding: var(--s4) var(--s5); display: grid; gap: var(--s3); }
+.compare-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }
+.compare tbody tr { cursor: default; }
+.best-item button { border: 0; background: none; padding: 0; color: inherit; font: inherit; }
+.best-open { display: inline-flex; align-items: baseline; gap: 6px; }

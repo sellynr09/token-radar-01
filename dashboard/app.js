@@ -250,7 +250,7 @@ function planTotalText(steps) {
   if (!DATA || typeof document === 'undefined') return;
   var app = document.getElementById('board');
   if (!app) return;
-  var state = { q: '', category: 'all', chain: 'all', minTvl: 0, confidence: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null, kbIndex: -1 };
+  var state = { q: '', category: 'all', chain: 'all', minTvl: 0, confidence: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null, kbIndex: -1, compare: [], catOv: null };
 
   function el(tag, attrs) {
     var node = document.createElement(tag);
@@ -282,6 +282,8 @@ function planTotalText(steps) {
     if (params.get('chain')) state.chain = params.get('chain');
     if (params.get('mintvl')) state.minTvl = Number(params.get('mintvl')) || 0;
     if (params.get('conf')) state.confidence = params.get('conf');
+    if (params.get('cmp')) state.compare = params.get('cmp').split(',').slice(0, 2);
+    if (params.get('catov')) state.catOv = params.get('catov');
     if (params.get('tab')) state.tab = params.get('tab');
     if (params.get('p')) state.selected = params.get('p');
   }
@@ -292,6 +294,8 @@ function planTotalText(steps) {
     if (state.chain !== 'all') params.set('chain', state.chain);
     if (state.minTvl) params.set('mintvl', String(state.minTvl));
     if (state.confidence !== 'all') params.set('conf', state.confidence);
+    if (state.compare.length) params.set('cmp', state.compare.join(','));
+    if (state.catOv) params.set('catov', state.catOv);
     if (state.tab !== 'pre-token') params.set('tab', state.tab);
     if (state.selected) params.set('p', state.selected);
     var next = params.toString();
@@ -405,7 +409,8 @@ function planTotalText(steps) {
       el('div', { class: 'field' }, el('label', { for: 'mintvl', text: 'Minimum TVL' }), mintvl),
       el('div', { class: 'field' }, el('label', { for: 'confidence', text: 'Confidence' }), conf),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Token status' }), el('div', { class: 'tabs' }, pre, live)),
-      el('span', { class: 'count', text: state.tab === 'pre-token' ? rows().length + ' rows shown' : DATA.live.length + ' live-token protocols' })
+      el('span', { class: 'count', text: state.tab === 'pre-token' ? rows().length + ' rows shown' : DATA.live.length + ' live-token protocols' }),
+      state.category !== 'all' ? el('button', { class: 'button', type: 'button', text: 'Category overview', onclick: function () { openCatOv(state.category); } }) : null
     );
   }
 
@@ -452,7 +457,10 @@ function planTotalText(steps) {
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
         el('td', null, el('span', { class: r.watchlist ? 'badge watch' : 'badge', text: r.watchlist ? 'Watchlist' : 'Early' })),
-        el('td', null, el('span', { class: 'badge conf-' + confidenceOf(r, DATA.median_tvl_usd), text: confidenceLabel(confidenceOf(r, DATA.median_tvl_usd)) }))
+        el('td', null, el('span', { class: 'badge conf-' + confidenceOf(r, DATA.median_tvl_usd), text: confidenceLabel(confidenceOf(r, DATA.median_tvl_usd)) })),
+        el('td', { class: 'cmp', onclick: function (e) { e.stopPropagation(); } },
+          el('input', { type: 'checkbox', 'aria-label': 'Compare ' + r.name, checked: state.compare.indexOf(r.slug) >= 0 ? 'checked' : null, onchange: function () { toggleCompare(r.slug); } })
+        )
       );
       if (state.kbIndex === i) tr.classList.add('kb-selected');
       tbody.appendChild(tr);
@@ -469,7 +477,8 @@ function planTotalText(steps) {
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
             el('th', { scope: 'col', text: 'List' }),
-            sortHeader('confidence', 'Confidence')
+            sortHeader('confidence', 'Confidence'),
+            el('th', { scope: 'col', text: 'Compare' })
           )),
           tbody
         )
@@ -515,10 +524,12 @@ function planTotalText(steps) {
       el('span', { class: 'best-label', text: 'Best in each category' }),
       el('div', { class: 'best-list' }, cats.map(function (c) {
         var r = byCat[c];
-        return el('button', { type: 'button', class: 'best-item', onclick: function () { openDetail(r.slug); } },
-          el('span', { class: 'best-cat', text: c }),
-          el('b', { text: r.name }),
-          el('span', { class: 'num', text: '#' + r.rank + ' · ' + fmtUsd(r.implied_value_usd) })
+        return el('span', { class: 'best-item' },
+          el('button', { type: 'button', class: 'best-cat', text: c, onclick: function () { openCatOv(c); } }),
+          el('button', { type: 'button', class: 'best-open', onclick: function () { openDetail(r.slug); } },
+            el('b', { text: r.name }),
+            el('span', { class: 'num', text: '#' + r.rank + ' · ' + fmtUsd(r.implied_value_usd) })
+          )
         );
       }))
     );
@@ -553,6 +564,90 @@ function planTotalText(steps) {
         'across ', el('b', { text: DATA.board_size + ' ranked rows' }), ' in ', el('b', { text: categories + ' categories' }), '. ',
         'A protocol "records no token" when the snapshot carries none for it, not that it has none, and implied value is an estimate, never a price.'
       )
+    );
+  }
+
+  /** Compare, by slug: two protocols side by side, with a verdict the model implies.
+      Selection lives in state, so it survives filtering; a third check replaces the oldest. */
+  function rowBySlug(slug) {
+    return DATA.rows.filter(function (r) { return r.slug === slug; })[0];
+  }
+  function toggleCompare(slug) {
+    var i = state.compare.indexOf(slug);
+    if (i >= 0) state.compare.splice(i, 1);
+    else { if (state.compare.length >= 2) state.compare.shift(); state.compare.push(slug); }
+    writeHash(); render();
+  }
+  function compareVerdict(a, b) {
+    var hi = a.implied_value_usd >= b.implied_value_usd ? a : b;
+    var lo = hi === a ? b : a;
+    var out = hi.name + ' #' + hi.rank + ' beats ' + lo.name + ' #' + lo.rank + ': ' + fmtUsd(hi.tvl_usd) + ' of TVL, ' + (hi.tvl_usd / Math.max(1, lo.tvl_usd)).toFixed(1) + 'x the other';
+    if (hi.change_7d !== null && lo.change_7d !== null && hi.change_7d !== lo.change_7d) out += ', and it ' + (hi.change_7d > lo.change_7d ? 'grew faster this week' : 'still ranks higher') + ' (' + fmtPct(hi.change_7d) + ' vs ' + fmtPct(lo.change_7d) + ')';
+    return out + ' — so the model reads ' + fmtUsd(hi.implied_value_usd) + ' against ' + fmtUsd(lo.implied_value_usd) + '.';
+  }
+  function comparePanel() {
+    if (state.compare.length === 0) return null;
+    var picked = state.compare.map(rowBySlug).filter(function (r) { return r; });
+    if (picked.length === 0) return null;
+    var names = picked.map(function (r) { return r.name; }).join(' vs ');
+    var head = el('div', { class: 'compare-head' },
+      el('h2', { text: picked.length === 2 ? 'Compare: ' + names : 'Compare: ' + names + ' — pick one more' }),
+      el('button', { class: 'button', type: 'button', text: 'Clear', onclick: function () { state.compare = []; writeHash(); render(); } })
+    );
+    if (picked.length < 2) return el('section', { class: 'panel compare' }, head);
+    var a = picked[0], b = picked[1];
+    function planCell(r) {
+      var t = planTotals(farmSteps(r));
+      return 'about ' + fmtGas(t.gas) + ' gas · ' + (t.hours === null ? 'n/a' : t.hours + 'h over ' + t.days + 'd');
+    }
+    function metric(label, fa, fb) {
+      return el('tr', null, el('th', { scope: 'row', text: label }), el('td', { class: 'num', text: fa }), el('td', { class: 'num', text: fb }));
+    }
+    return el('section', { class: 'panel compare', 'aria-label': 'Compare protocols' }, head,
+      el('div', { class: 'table-wrap' },
+        el('table', null,
+          el('thead', null, el('tr', null, el('th', { scope: 'col', text: 'Metric' }), el('th', { scope: 'col', text: a.name }), el('th', { scope: 'col', text: b.name }))),
+          el('tbody', null,
+            metric('Rank', '#' + a.rank, '#' + b.rank),
+            metric('TVL', fmtUsd(a.tvl_usd), fmtUsd(b.tvl_usd)),
+            metric('7-day growth', fmtPct(a.change_7d), fmtPct(b.change_7d)),
+            metric('Age, no token', fmtAge(a.age_days), fmtAge(b.age_days)),
+            metric('Implied value', fmtUsd(a.implied_value_usd), fmtUsd(b.implied_value_usd)),
+            metric('Confidence', confidenceLabel(confidenceOf(a, DATA.median_tvl_usd)), confidenceLabel(confidenceOf(b, DATA.median_tvl_usd))),
+            metric('Plan total', planCell(a), planCell(b))
+          )
+        )
+      ),
+      el('p', { class: 'sub verdict', text: compareVerdict(a, b) })
+    );
+  }
+
+  /** A category at a glance, from the board alone. */
+  function catStats(cat) {
+    var list = DATA.rows.filter(function (r) { return (r.category || 'Other') === cat; });
+    var tvls = list.map(function (r) { return r.tvl_usd; }).sort(function (x, y) { return x - y; });
+    var top = list.slice().sort(function (x, y) { return x.rank - y.rank; })[0];
+    var total = list.reduce(function (n, r) { return n + r.implied_value_usd; }, 0);
+    return { count: list.length, median: tvls.length ? tvls[Math.floor(tvls.length / 2)] : 0, top: top, total: total };
+  }
+  function openCatOv(cat) { state.catOv = cat; writeHash(); render(); }
+  function catOvPanel() {
+    if (!state.catOv) return null;
+    var s = catStats(state.catOv);
+    if (!s.top) return null;
+    return el('section', { class: 'panel catov', 'aria-label': 'Category overview' },
+      el('div', { class: 'compare-head' },
+        el('h2', { text: 'Category: ' + state.catOv }),
+        el('button', { class: 'button', type: 'button', text: 'Close', onclick: function () { state.catOv = null; writeHash(); render(); } })
+      ),
+      el('div', { class: 'tiles' },
+        tile('Protocols', String(s.count), ''),
+        tile('Median TVL', fmtUsd(s.median), ''),
+        tile('Top pick', s.top.name, '#' + s.top.rank + ' · ' + fmtUsd(s.top.implied_value_usd)),
+        tile('Total implied', fmtUsd(s.total), '')
+      ),
+      el('p', { class: 'sub', text: 'Top pick by rank; the total sums the category — an estimate, not a price.' }),
+      el('button', { class: 'button primary', type: 'button', text: 'Show only this category', onclick: function () { state.category = state.catOv; state.catOv = null; writeHash(); render(); } })
     );
   }
 
@@ -649,6 +744,11 @@ function planTotalText(steps) {
     shell.appendChild(controls());
     if (state.tab === 'pre-token') shell.appendChild(bestStrip());
     if (state.tab === 'pre-token') shell.appendChild(methodPanel());
+    if (state.tab === 'pre-token') {
+      var cp = comparePanel(), co = catOvPanel();
+      if (cp) shell.appendChild(cp);
+      if (co) shell.appendChild(co);
+    }
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     if (state.tab === 'pre-token') shell.appendChild(modelPanel());
     shell.appendChild(el('p', { class: 'footnote', text: 'Source: ' + DATA.source + '. Snapshot as of ' + DATA.as_of + '. Implied values are the radar-2 model, computed from the snapshot alone.' }));
