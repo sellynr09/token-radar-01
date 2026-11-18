@@ -43,6 +43,33 @@ function whyRank(row, model, medianTvl) {
   return 'Rank ' + row.rank + ' because it holds ' + fmtUsd(row.tvl_usd) + ' of TVL, ' + ratio + 'x the board median: the ' + model.base_multiple + ' base alone is ' + fmtUsd(base) + ', ' + growth + ', and ' + age + ' puts the maturity multiplier at ' + row.maturity_multiplier + ' — so the model reads ' + fmtUsd(row.implied_value_usd) + '.';
 }
 
+/** A row's confidence, the same rule lib/model.ts writes to board.json: high needs a recorded
+    age, a reported 7-day change and a TVL at or above the board median; low is an estimated
+    age together with a missing week or a fall past 10%, worse than the board median's -8.2%
+    week; everything else is medium. */
+function confidenceOf(row, medianTvl) {
+  var ageKnown = row.age_days !== null && row.age_days !== undefined;
+  var growthKnown = row.change_7d !== null && row.change_7d !== undefined;
+  var aboveMedian = row.tvl_usd >= medianTvl;
+  if (ageKnown && growthKnown && aboveMedian) return 'high';
+  if (!ageKnown && (!growthKnown || row.change_7d < -10)) return 'low';
+  return 'medium';
+}
+function confidenceLabel(conf) { return conf.charAt(0).toUpperCase() + conf.slice(1); }
+/** One line on what drove a row's confidence, from the same three facts the rule reads. */
+function confidenceWhy(row, medianTvl) {
+  var conf = confidenceOf(row, medianTvl);
+  var ageKnown = row.age_days !== null && row.age_days !== undefined;
+  var growthKnown = row.change_7d !== null && row.change_7d !== undefined;
+  var aboveMedian = row.tvl_usd >= medianTvl;
+  var bits = [];
+  bits.push(ageKnown ? 'its listing age is on record' : 'its listing age is unknown, so the model counts 180 days');
+  if (growthKnown && row.change_7d < -10) bits.push('TVL fell ' + Math.abs(row.change_7d).toFixed(1) + '% this week');
+  else bits.push(growthKnown ? "the week's change is reported" : 'no 7-day change is on record');
+  bits.push(aboveMedian ? 'its TVL sits above the board median' : 'its TVL sits below the board median');
+  return 'Confidence is ' + conf + ' because ' + bits.join(', ') + '.';
+}
+
 /** The model in one function: TVL x base, growth, maturity — the same as lib/model.ts. */
 function impliedOf(row, model) {
   var growth = Math.min(model.growth_cap, Math.max(model.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
@@ -147,6 +174,12 @@ function timeEstimate(holdDays, ageDays) {
   var hours = Math.round(minutes / 30) / 2;
   return 'about ' + hours + ' hour' + (hours === 1 ? '' : 's') + ' of activity spread over ' + holdDays + ' days';
 }
+/** A momentum warning for a protocol whose TVL fell this week, or null when it did not: the
+    same derivation main.ts writes to board.json. */
+function momentumNote(p) {
+  if (p.change_7d === null || p.change_7d === undefined || p.change_7d >= 0) return null;
+  return ' TVL fell ' + Math.abs(p.change_7d).toFixed(1) + '% this week — size the first position small and re-check before adding.';
+}
 function farmSteps(p) {
   var chain = chainOf(p);
   var capital = capitalFor(p);
@@ -162,7 +195,7 @@ function farmSteps(p) {
   steps.push(
     { text: secondActionFor(p, capital, chain), cost: 'one more transaction: ' + gasHint(chain), time: '10 minutes' },
     { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: 'each weekly action costs ' + gasPerTx(chain) + ' in gas', time: '10 minutes a week' },
-    { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: timeEstimate(hold, p.age_days) },
+    { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.' + (momentumNote(p) || ''), cost: 'the $' + capital + ' stays in the position', time: timeEstimate(hold, p.age_days) },
     { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes.", cost: 'no fee to check, and never pay to claim', time: '10 minutes' },
     { text: 'Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'nothing but the log', time: '5 minutes' }
   );
@@ -364,7 +397,8 @@ function farmSteps(p) {
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
-        el('td', null, el('span', { class: r.watchlist ? 'badge watch' : 'badge', text: r.watchlist ? 'Watchlist' : 'Early' }))
+        el('td', null, el('span', { class: r.watchlist ? 'badge watch' : 'badge', text: r.watchlist ? 'Watchlist' : 'Early' })),
+        el('td', null, el('span', { class: 'badge conf-' + confidenceOf(r, DATA.median_tvl_usd), text: confidenceLabel(confidenceOf(r, DATA.median_tvl_usd)) }))
       );
       if (state.kbIndex === i) tr.classList.add('kb-selected');
       tbody.appendChild(tr);
@@ -380,7 +414,8 @@ function farmSteps(p) {
             sortHeader('growth', '7d'),
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
-            el('th', { scope: 'col', text: 'List' })
+            el('th', { scope: 'col', text: 'List' }),
+            el('th', { scope: 'col', text: 'Confidence' })
           )),
           tbody
         )
@@ -408,6 +443,30 @@ function farmSteps(p) {
           tbody
         )
       )
+    );
+  }
+
+  /** The best in each category: the top-ranked protocol of every category on the board, one
+      chip each, in a single scrolling strip above the table. Select a chip to open that
+      protocol's model and farm plan. The strip reads the whole board, not the filters, so it
+      stays a map of the board while the table narrows. */
+  function bestStrip() {
+    var byCat = {};
+    DATA.rows.forEach(function (r) {
+      var cat = r.category || 'Other';
+      if (!byCat[cat] || r.rank < byCat[cat].rank) byCat[cat] = r;
+    });
+    var cats = Object.keys(byCat).sort();
+    return el('section', { class: 'panel best', 'aria-label': 'Best in each category' },
+      el('span', { class: 'best-label', text: 'Best in each category' }),
+      el('div', { class: 'best-list' }, cats.map(function (c) {
+        var r = byCat[c];
+        return el('button', { type: 'button', class: 'best-item', onclick: function () { openDetail(r.slug); } },
+          el('span', { class: 'best-cat', text: c }),
+          el('b', { text: r.name }),
+          el('span', { class: 'num', text: '#' + r.rank + ' · ' + fmtUsd(r.implied_value_usd) })
+        );
+      }))
     );
   }
 
@@ -465,6 +524,13 @@ function farmSteps(p) {
       el('p', { class: 'sub', text: whyRank(row, DATA.model, DATA.median_tvl_usd) })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
+      el('h3', { text: 'Confidence' }),
+      el('p', { class: 'sub' },
+        el('span', { class: 'badge conf-' + confidenceOf(row, DATA.median_tvl_usd), text: confidenceLabel(confidenceOf(row, DATA.median_tvl_usd)) }),
+        ' ' + confidenceWhy(row, DATA.median_tvl_usd)
+      )
+    ));
+    dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
       el('ol', { class: 'steps' }, steps.map(function (s) {
         var at = s.indexOf(' Cost: ');
@@ -494,6 +560,7 @@ function farmSteps(p) {
     shell.appendChild(lede());
     shell.appendChild(tiles());
     shell.appendChild(controls());
+    if (state.tab === 'pre-token') shell.appendChild(bestStrip());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     if (state.tab === 'pre-token') shell.appendChild(modelPanel());
     shell.appendChild(el('p', { class: 'footnote', text: 'Source: ' + DATA.source + '. Snapshot as of ' + DATA.as_of + '. Implied values are the radar-2 model, computed from the snapshot alone.' }));

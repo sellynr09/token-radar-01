@@ -107,6 +107,23 @@ tbody tr.kb-selected { background: rgba(240, 180, 41, 0.14); outline: 2px solid 
 .badge.watch::before { background: var(--accent); }
 .badge.live { color: var(--muted); }
 .badge.live::before { background: var(--muted); }
+.badge.conf-high { color: var(--positive); }
+.badge.conf-high::before { background: var(--positive); }
+.badge.conf-medium { color: var(--accent); }
+.badge.conf-medium::before { background: var(--accent); }
+.badge.conf-low { color: var(--negative); }
+.badge.conf-low::before { background: var(--negative); }
+
+/* Best in each category: one compact band above the table, a label on the left and the
+   category leaders scrolling beside it, so 33 categories cost one row of height. */
+.best { display: flex; align-items: center; gap: var(--s4); padding: var(--s3) var(--s4); margin-bottom: var(--s4); }
+.best-label { flex: none; font-family: var(--font-num); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.best-list { display: flex; gap: var(--s2); overflow-x: auto; min-width: 0; padding: 2px; }
+.best-item { flex: none; display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--ink); font-size: 13px; white-space: nowrap; }
+.best-item:hover { border-color: var(--accent); }
+.best-cat { color: var(--muted); font-size: 12px; }
+.best-item b { font-weight: 600; }
+.best-item .num { color: var(--accent); font-size: 12px; }
 
 .model { margin-top: var(--s4); padding: var(--s5); display: grid; gap: var(--s3); }
 .formula { font-family: var(--font-num); font-size: 13px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; background: var(--canvas); border: 1px solid var(--border); border-radius: var(--radius-control); padding: var(--s3) var(--s4); }

@@ -99,6 +99,7 @@ export interface BoardRow {
   watchlist: boolean;
   age_days: number | null;
   implied_value_usd: number;
+  confidence: Confidence;
   model: {
     base_multiple: number;
     growth_pct: number;
@@ -122,6 +123,7 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
+  confidence: Confidence;
   growth_multiplier: number;
   maturity_multiplier: number;
   watchlist: boolean;
@@ -196,6 +198,27 @@ export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: Mo
   return { implied, growthPct, growthMult, maturityMult, age };
 }
 
+/** How sure the model's read of a row is: high, medium or low, from the snapshot figures alone. */
+export type Confidence = 'high' | 'medium' | 'low';
+
+/** A weekly fall worse than this is a strongly negative week: the board median's week was
+    -8.2%, so a fall past -10% is worse than the typical protocol's week, not a wobble. */
+export const STRONG_FALL_PCT = -10;
+
+/** A row's confidence, from three facts the snapshot carries: whether the listing age is on
+    record (an unknown age is counted as 180 days, an estimate, not a fact), whether the 7-day
+    change is reported, and whether the TVL sits at or above the board median. High needs all
+    three; low is an estimated age together with a missing or strongly negative week — the
+    read rests on the least the snapshot says; everything else is medium. */
+export function confidenceOf(row: { age_days: number | null; change_7d: number | null; tvl_usd: number }, medianTvl: number): Confidence {
+  const ageKnown = row.age_days !== null;
+  const growthKnown = row.change_7d !== null;
+  const aboveMedian = row.tvl_usd >= medianTvl;
+  if (ageKnown && growthKnown && aboveMedian) return 'high';
+  if (!ageKnown && (!growthKnown || (row.change_7d as number) < STRONG_FALL_PCT)) return 'low';
+  return 'medium';
+}
+
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
 const VERSIONED = /\s(V\d+(\.\d+)?|v\d+(\.\d+)?|\d+\.\d+)$/;
 
@@ -261,6 +284,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     return { p, implied, growthPct, growthMult, maturityMult, age };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
+  // The confidence median is the same median buildRadar reports: the board's own TVLs, sorted.
+  const medianTvl = medianOf(scored.map((s) => s.p.tvl_usd).sort((a, b) => a - b)) ?? 0;
   return scored.map((s, i) => ({
     rank: i + 1,
     slug: s.p.slug,
@@ -277,6 +302,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     watchlist: watchlist.has(s.p.slug),
     age_days: s.age,
     implied_value_usd: s.implied,
+    confidence: confidenceOf({ age_days: s.age, change_7d: s.p.change_7d, tvl_usd: s.p.tvl_usd }, medianTvl),
     model: {
       base_multiple: model.base_multiple,
       growth_pct: s.growthPct,
@@ -358,6 +384,16 @@ function secondActionFor(p: SnapshotProtocol, capital: number, chain: string): s
   return `Make a second deposit of $${small} into ${name} on ${chain} a week after the first.`;
 }
 
+/** A momentum warning for a protocol whose TVL fell this week, or null when it did not: the
+    fall in per cent, and the sizing advice that follows from it. A falling week does not
+    change the implied value — the growth multiplier already carries it — but a farm plan that
+    says nothing about a falling week would send a farmer in at full size on a protocol that
+    is shrinking. The note is derived from the week's change alone, never from a name. */
+export function momentumNote(p: SnapshotProtocol): string | null {
+  if (p.change_7d === null || p.change_7d >= 0) return null;
+  return ` TVL fell ${Math.abs(p.change_7d).toFixed(1)}% this week — size the first position small and re-check before adding.`;
+}
+
 /**
  * A protocol's farm plan: seven steps, eight when it runs on more than one chain, each an
  * action with a cost and a time. The plan is derived from the protocol's own record (category,
@@ -406,7 +442,7 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: '10 minutes a week',
     },
     {
-      text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
+      text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.${momentumNote(p) ?? ''}`,
       cost: `the $${capital} stays in the position`,
       time: timeEstimate(hold, age),
     },
@@ -516,6 +552,7 @@ export function radarRow(row: BoardRow): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
+    confidence: row.confidence,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     watchlist: row.watchlist,
