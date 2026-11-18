@@ -125,6 +125,12 @@ tbody tr.kb-selected { background: rgba(240, 180, 41, 0.14); outline: 2px solid 
 .best-item b { font-weight: 600; }
 .best-item .num { color: var(--accent); font-size: 12px; }
 
+/* How the model works: one short panel above the table, three plain-words paragraphs,
+   so the board's method is visible before the first row, not only below the table. */
+.method { margin-bottom: var(--s4); padding: var(--s4) var(--s5); display: grid; gap: var(--s2); }
+.method p { color: var(--muted); font-size: 13px; max-width: 110ch; }
+.method p b { color: var(--ink); font-weight: 600; }
+
 .model { margin-top: var(--s4); padding: var(--s5); display: grid; gap: var(--s3); }
 .formula { font-family: var(--font-num); font-size: 13px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; background: var(--canvas); border: 1px solid var(--border); border-radius: var(--radius-control); padding: var(--s3) var(--s4); }
 .model-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s3); }
@@ -159,6 +165,7 @@ tbody tr.kb-selected { background: rgba(240, 180, 41, 0.14); outline: 2px solid 
 .equation div { display: flex; justify-content: space-between; gap: var(--s3); }
 .equation span { color: var(--muted); }
 .steps { margin: 0; padding-left: var(--s5); display: grid; gap: var(--s3); }
+.plan-total { font-family: var(--font-num); font-size: 13px; line-height: 1.6; background: var(--surface-2); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius-control); padding: var(--s2) var(--s3); margin-bottom: var(--s3); }
 .steps li { padding-left: var(--s1); }
 .steps li::marker { color: var(--accent); font-family: var(--font-num); }
 .steps b { display: block; font-weight: 500; }

@@ -202,13 +202,55 @@ function farmSteps(p) {
   return steps.map(stepText);
 }
 
+/** One step's gas in dollars, read from the Cost: tail the drawer already renders:
+    "under $X" counts as X, "$X to $Y" as Y, "a few cents" as $0.05, "a few dollars"
+    as $3; a step with no gas figure (capital held, no fee to check) counts as $0. */
+function gasFigure(cost) {
+  var m = /under \$([\d.]+)/.exec(cost);
+  if (m) return Number(m[1]);
+  m = /\$([\d.]+) to \$([\d.]+)/.exec(cost);
+  if (m) return Number(m[2]);
+  if (/a few cents/.test(cost)) return 0.05;
+  if (/a few dollars/.test(cost)) return 3;
+  return 0;
+}
+function fmtGas(n) { return '$' + (n % 1 === 0 ? String(n) : n.toFixed(2)); }
+/** A plan's totals, parsed from its own step strings, so the drawer can summarise the
+    plan it already shows. One-off gas is the sum of the steps' gas figures; the weekly
+    action is kept apart because it recurs. Time is the hold step's whole-plan effort
+    ("about X hours of activity spread over Y days"), which already counts setup, the
+    weekly actions and the claim check, so the per-step minutes are not added on top. */
+function planTotals(steps) {
+  var gas = 0, weeklyGas = 0, hours = null, days = null;
+  steps.forEach(function (s) {
+    var at = s.indexOf(' Cost: ');
+    var rest = at >= 0 ? s.slice(at + 7) : '';
+    var tat = rest.indexOf(' Time: ');
+    var cost = tat >= 0 ? rest.slice(0, tat) : rest;
+    var time = tat >= 0 ? rest.slice(tat + 7).replace(/\.$/, '') : '';
+    var g = gasFigure(cost);
+    if (/each weekly action/.test(cost)) weeklyGas += g;
+    else gas += g;
+    var hm = /about ([\d.]+) hours? of activity spread over (\d+) days/.exec(time);
+    if (hm) { hours = Number(hm[1]); days = Number(hm[2]); }
+  });
+  return { gas: gas, weeklyGas: weeklyGas, hours: hours, days: days };
+}
+function planTotalText(steps) {
+  var t = planTotals(steps);
+  var out = 'Plan total: about ' + fmtGas(t.gas) + ' in gas';
+  if (t.hours !== null) out += ' · about ' + t.hours + ' hour' + (t.hours === 1 ? '' : 's') + ' of activity' + (t.days !== null ? ' over ' + t.days + ' days' : '');
+  if (t.weeklyGas > 0) out += ' · then ' + fmtGas(t.weeklyGas) + ' per weekly action';
+  return out + '.';
+}
+
 (function () {
   'use strict';
   var DATA = (typeof window !== 'undefined' && window.RADAR) || null;
   if (!DATA || typeof document === 'undefined') return;
   var app = document.getElementById('board');
   if (!app) return;
-  var state = { q: '', category: 'all', chain: 'all', minTvl: 0, tab: 'pre-token', sort: 'implied', dir: -1, selected: null, kbIndex: -1 };
+  var state = { q: '', category: 'all', chain: 'all', minTvl: 0, confidence: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null, kbIndex: -1 };
 
   function el(tag, attrs) {
     var node = document.createElement(tag);
@@ -239,6 +281,7 @@ function farmSteps(p) {
     if (params.get('category')) state.category = params.get('category');
     if (params.get('chain')) state.chain = params.get('chain');
     if (params.get('mintvl')) state.minTvl = Number(params.get('mintvl')) || 0;
+    if (params.get('conf')) state.confidence = params.get('conf');
     if (params.get('tab')) state.tab = params.get('tab');
     if (params.get('p')) state.selected = params.get('p');
   }
@@ -248,6 +291,7 @@ function farmSteps(p) {
     if (state.category !== 'all') params.set('category', state.category);
     if (state.chain !== 'all') params.set('chain', state.chain);
     if (state.minTvl) params.set('mintvl', String(state.minTvl));
+    if (state.confidence !== 'all') params.set('conf', state.confidence);
     if (state.tab !== 'pre-token') params.set('tab', state.tab);
     if (state.selected) params.set('p', state.selected);
     var next = params.toString();
@@ -261,6 +305,7 @@ function farmSteps(p) {
       if (state.category !== 'all' && (r.category || 'Other') !== state.category) return false;
       if (state.chain !== 'all' && (r.chains || []).indexOf(state.chain) < 0) return false;
       if (state.minTvl && r.tvl_usd < state.minTvl) return false;
+      if (state.confidence !== 'all' && confidenceOf(r, DATA.median_tvl_usd) !== state.confidence) return false;
       if (!q) return true;
       var hay = [r.name, r.slug, r.category, (r.chains || []).join(' ')].join(' ').toLowerCase();
       return hay.indexOf(q) >= 0;
@@ -274,6 +319,7 @@ function farmSteps(p) {
       else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
       else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
+      else if (key === 'confidence') { var confRank = { high: 3, medium: 2, low: 1 }; av = confRank[confidenceOf(a, DATA.median_tvl_usd)] || 0; bv = confRank[confidenceOf(b, DATA.median_tvl_usd)] || 0; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -343,6 +389,13 @@ function farmSteps(p) {
       tvlOptions.map(function (o) { return el('option', { value: String(o[0]), text: o[1], selected: o[0] === state.minTvl ? 'selected' : null }); })
     );
     mintvl.addEventListener('change', function () { state.minTvl = Number(mintvl.value) || 0; writeHash(); render(); });
+    var confCounts = { high: 0, medium: 0, low: 0 };
+    DATA.rows.forEach(function (r) { confCounts[confidenceOf(r, DATA.median_tvl_usd)] += 1; });
+    var confOptions = [['all', 'All confidence'], ['high', 'High (' + confCounts.high + ')'], ['medium', 'Medium (' + confCounts.medium + ')'], ['low', 'Low (' + confCounts.low + ')']];
+    var conf = el('select', { id: 'confidence', 'aria-label': 'Filter by confidence' },
+      confOptions.map(function (o) { return el('option', { value: o[0], text: o[1], selected: o[0] === state.confidence ? 'selected' : null }); })
+    );
+    conf.addEventListener('change', function () { state.confidence = conf.value; writeHash(); render(); });
     var pre = el('button', { type: 'button', 'aria-pressed': state.tab === 'pre-token' ? 'true' : 'false', text: 'Pre-token', onclick: function () { state.tab = 'pre-token'; render(); } });
     var live = el('button', { type: 'button', 'aria-pressed': state.tab === 'live' ? 'true' : 'false', text: 'Live token', onclick: function () { state.tab = 'live'; render(); } });
     return el('div', { class: 'controls' },
@@ -350,6 +403,7 @@ function farmSteps(p) {
       el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), cat),
       el('div', { class: 'field' }, el('label', { for: 'chain', text: 'Chain' }), chain),
       el('div', { class: 'field' }, el('label', { for: 'mintvl', text: 'Minimum TVL' }), mintvl),
+      el('div', { class: 'field' }, el('label', { for: 'confidence', text: 'Confidence' }), conf),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Token status' }), el('div', { class: 'tabs' }, pre, live)),
       el('span', { class: 'count', text: state.tab === 'pre-token' ? rows().length + ' rows shown' : DATA.live.length + ' live-token protocols' })
     );
@@ -371,7 +425,7 @@ function farmSteps(p) {
       return el('div', { class: 'panel' }, el('div', { class: 'empty' },
         el('h2', { text: 'No protocol matches that filter' }),
         el('p', { text: 'Clear the search or pick another category to see the board again.' }),
-        el('button', { class: 'button primary', type: 'button', text: 'Clear filters', onclick: function () { state.q = ''; state.category = 'all'; state.chain = 'all'; state.minTvl = 0; writeHash(); render(); } })
+        el('button', { class: 'button primary', type: 'button', text: 'Clear filters', onclick: function () { state.q = ''; state.category = 'all'; state.chain = 'all'; state.minTvl = 0; state.confidence = 'all'; writeHash(); render(); } })
       ));
     }
     var max = DATA.top_implied_usd || 1;
@@ -415,7 +469,7 @@ function farmSteps(p) {
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
             el('th', { scope: 'col', text: 'List' }),
-            el('th', { scope: 'col', text: 'Confidence' })
+            sortHeader('confidence', 'Confidence')
           )),
           tbody
         )
@@ -470,6 +524,38 @@ function farmSteps(p) {
     );
   }
 
+  /** How the model works, in plain words and with the board's own numbers: the formula
+      the model panel below spells out, the confidence rule, and what the board covers.
+      Every figure here is computed from the loaded data when the page renders, so the
+      panel stays true if the snapshot changes. */
+  function methodPanel() {
+    var m = DATA.model;
+    var confCounts = { high: 0, medium: 0, low: 0 };
+    DATA.rows.forEach(function (r) { confCounts[confidenceOf(r, DATA.median_tvl_usd)] += 1; });
+    var watchlistPresent = DATA.rows.filter(function (r) { return r.watchlist; }).length;
+    var categories = Array.from(new Set(DATA.rows.map(function (r) { return r.category || 'Other'; }))).length;
+    return el('section', { class: 'panel method', 'aria-label': 'How the model works' },
+      el('h2', { text: 'How the model works' }),
+      el('p', null,
+        'Implied value starts from TVL: a token is worth ', el('b', { text: m.base_multiple + 'x' }), ' the value already locked in the protocol. ',
+        'The week\'s growth then moves it — ', el('b', { text: 'x' + m.growth_weight }), ' weight, clamped between ', el('b', { text: m.growth_floor + '%' }), ' and ', el('b', { text: '+' + m.growth_cap + '%' }), ' — ',
+        'and age with no token adds maturity: ', el('b', { text: m.maturity_floor + ' + up to ' + m.maturity_range }), ' over ', el('b', { text: m.maturity_days + ' days' }), ', ',
+        'with an unknown age counted as ', el('b', { text: m.unknown_age_days + ' days' }), '. ',
+        'The median row holds ', el('b', { text: fmtUsd(DATA.median_tvl_usd) }), ' of TVL and ', el('b', { text: fmtPct(DATA.median_change_7d) }), ' over seven days, so a protocol still growing stands out.'
+      ),
+      el('p', null,
+        'Confidence is a check on the record behind the rank: ', el('b', { text: 'high' }), ' needs a recorded listing age, a reported week and TVL at or above the median; ',
+        el('b', { text: 'low' }), ' is an estimated age together with a missing week or a fall past 10%; the rest is ', el('b', { text: 'medium' }), '. ',
+        'On this board that is ', el('b', { text: confCounts.high + ' high' }), ' · ', el('b', { text: confCounts.medium + ' medium' }), ' · ', el('b', { text: confCounts.low + ' low' }), '.'
+      ),
+      el('p', null,
+        'Coverage: ', el('b', { text: watchlistPresent + ' of ' + DATA.watchlist_size + ' watchlist protocols' }), ' are on the board — all of them — ',
+        'across ', el('b', { text: DATA.board_size + ' ranked rows' }), ' in ', el('b', { text: categories + ' categories' }), '. ',
+        'A protocol "records no token" when the snapshot carries none for it, not that it has none, and implied value is an estimate, never a price.'
+      )
+    );
+  }
+
   function modelPanel() {
     var m = DATA.model;
     var top = DATA.rows[0];
@@ -481,7 +567,7 @@ function farmSteps(p) {
       ),
       el('div', { class: 'model-grid' },
         el('div', { class: 'model-cell' }, el('b', { text: 'TVL is the anchor' }), el('span', { text: 'A token scales with the value already locked in the protocol, so the largest pre-token pools head the board.' })),
-        el('div', { class: 'model-cell' }, el('b', { text: 'Growth moves ranks' }), el('span', { text: 'The median protocol lost 8.2% of TVL in the week, so one still growing stands out; a single hot week cannot buy the top.' })),
+        el('div', { class: 'model-cell' }, el('b', { text: 'Growth moves ranks' }), el('span', { text: 'The median protocol changed ' + fmtPct(DATA.median_change_7d) + ' of TVL in the week, so one still growing stands out; a single hot week cannot buy the top.' })),
         el('div', { class: 'model-cell' }, el('b', { text: 'Age is the record' }), el('span', { text: 'Age is the time since first listing, the best record of how long a protocol has run with no token; an unknown age counts as ' + m.unknown_age_days + ' days.' }))
       ),
       top ? el('p', { class: 'sub', text: 'Worked example, rank 1: ' + top.name + ' holds ' + fmtUsd(top.tvl_usd) + ' of TVL, ' + fmtPct(top.change_7d) + ' over seven days, ' + fmtAge(top.age_days) + ' with no token on record, so the model reads ' + fmtUsd(top.implied_value_usd) + '.' }) : null,
@@ -532,6 +618,7 @@ function farmSteps(p) {
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
+      el('p', { class: 'plan-total', text: planTotalText(steps) }),
       el('ol', { class: 'steps' }, steps.map(function (s) {
         var at = s.indexOf(' Cost: ');
         var action = at >= 0 ? s.slice(0, at) : s;
@@ -561,6 +648,7 @@ function farmSteps(p) {
     shell.appendChild(tiles());
     shell.appendChild(controls());
     if (state.tab === 'pre-token') shell.appendChild(bestStrip());
+    if (state.tab === 'pre-token') shell.appendChild(methodPanel());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     if (state.tab === 'pre-token') shell.appendChild(modelPanel());
     shell.appendChild(el('p', { class: 'footnote', text: 'Source: ' + DATA.source + '. Snapshot as of ' + DATA.as_of + '. Implied values are the radar-2 model, computed from the snapshot alone.' }));
